@@ -1,0 +1,42 @@
+[project]
+name = "fantasy-gm"
+version = "0.1.0"
+description = "Personal fantasy football league manager: sync, rosters, analytics"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "tenacity>=8.3",
+    "typer>=0.12",
+    "apscheduler>=3.10,<4",
+    "scipy>=1.13",
+    "anthropic>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "respx>=0.21", "ruff>=0.5"]
+
+[project.scripts]
+fgm = "fantasy_gm.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fantasy_gm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = ["B008", "E501"]  # Depends() defaults are idiomatic; the formatter owns line length

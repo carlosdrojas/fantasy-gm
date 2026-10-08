@@ -53,9 +53,11 @@ class UTCDateTime(TypeDecorator[datetime]):
         return value.astimezone(UTC) if value is not None else None
 
     def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
-        if value is not None and value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        return value
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)  # Postgres answers in the session's time zone
 
 
 class Base(DeclarativeBase):
@@ -70,7 +72,7 @@ class League(Base):
     platform: Mapped[str] = mapped_column(String(16))
     external_id: Mapped[str] = mapped_column(String(64))
     season: Mapped[int]
-    name: Mapped[str | None] = mapped_column(String(200))
+    name: Mapped[str | None] = mapped_column(String)
     current_week: Mapped[int | None]
     final_regular_week: Mapped[int | None]
     my_team_id: Mapped[int | None] = mapped_column(Integer)  # Team.id, not the platform id
@@ -91,9 +93,9 @@ class Team(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     league_id: Mapped[int] = mapped_column(ForeignKey("leagues.id", ondelete="CASCADE"), index=True)
     external_id: Mapped[str] = mapped_column(String(64))
-    name: Mapped[str] = mapped_column(String(200))
-    abbrev: Mapped[str | None] = mapped_column(String(16))
-    owner_name: Mapped[str | None] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String)
+    abbrev: Mapped[str | None] = mapped_column(String)
+    owner_name: Mapped[str | None] = mapped_column(String)
     owner_ids: Mapped[list[Any]] = mapped_column(JSON, default=list)
     wins: Mapped[int] = mapped_column(default=0)
     losses: Mapped[int] = mapped_column(default=0)
@@ -103,7 +105,7 @@ class Team(Base):
     playoff_seed: Mapped[int | None]
     waiver_rank: Mapped[int | None]
     faab_spent: Mapped[int | None]
-    logo_url: Mapped[str | None] = mapped_column(String(500))
+    logo_url: Mapped[str | None] = mapped_column(String)
 
     league: Mapped[League] = relationship(back_populates="teams")
     roster: Mapped[list[RosterEntry]] = relationship(
@@ -120,10 +122,10 @@ class Player(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     platform: Mapped[str] = mapped_column(String(16))
     external_id: Mapped[str] = mapped_column(String(64))
-    full_name: Mapped[str] = mapped_column(String(200))
-    position: Mapped[str] = mapped_column(String(8))
-    pro_team: Mapped[str | None] = mapped_column(String(8))
-    injury_status: Mapped[str | None] = mapped_column(String(32))
+    full_name: Mapped[str] = mapped_column(String)
+    position: Mapped[str] = mapped_column(String)
+    pro_team: Mapped[str | None] = mapped_column(String)
+    injury_status: Mapped[str | None] = mapped_column(String)
     eligible_slots: Mapped[list[Any]] = mapped_column(JSON, default=list)  # slot names
     percent_owned: Mapped[float | None] = mapped_column(Float)
     percent_owned_change: Mapped[float | None] = mapped_column(Float)
@@ -140,8 +142,8 @@ class RosterEntry(Base):
     league_id: Mapped[int] = mapped_column(ForeignKey("leagues.id", ondelete="CASCADE"), index=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
-    slot: Mapped[str] = mapped_column(String(16))
-    acquisition_type: Mapped[str | None] = mapped_column(String(16))
+    slot: Mapped[str] = mapped_column(String)
+    acquisition_type: Mapped[str | None] = mapped_column(String)
 
     team: Mapped[Team] = relationship(back_populates="roster")
     player: Mapped[Player] = relationship()
@@ -196,12 +198,12 @@ class ProGame(Base):
     external_id: Mapped[str] = mapped_column(String(32))
     season: Mapped[int] = mapped_column(index=True)
     week: Mapped[int] = mapped_column(index=True)
-    home_team: Mapped[str] = mapped_column(String(8))
-    away_team: Mapped[str] = mapped_column(String(8))
+    home_team: Mapped[str] = mapped_column(String)
+    away_team: Mapped[str] = mapped_column(String)
     home_score: Mapped[int | None]
     away_score: Mapped[int | None]
-    state: Mapped[str] = mapped_column(String(8))  # pre/in/post
-    detail: Mapped[str] = mapped_column(String(64), default="")
+    state: Mapped[str] = mapped_column(String)  # pre/in/post
+    detail: Mapped[str] = mapped_column(String, default="")
     kickoff: Mapped[datetime | None] = mapped_column(UTCDateTime())
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
@@ -213,8 +215,8 @@ class Transaction(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     league_id: Mapped[int] = mapped_column(ForeignKey("leagues.id", ondelete="CASCADE"), index=True)
     external_id: Mapped[str] = mapped_column(String(64))
-    type: Mapped[str] = mapped_column(String(24))
-    status: Mapped[str] = mapped_column(String(24))
+    type: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
     team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"))
     week: Mapped[int | None]
     bid_amount: Mapped[int | None]
@@ -242,10 +244,57 @@ class ChatMessage(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     league_id: Mapped[int] = mapped_column(ForeignKey("leagues.id", ondelete="CASCADE"), index=True)
+    # Who owns the conversation; None for anonymous demo visitors.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     conversation_id: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(12))
     content: Mapped[list[Any]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class User(Base):
+    """An account. ``external_id`` is the auth provider's user id (Clerk's ``sub``), or
+    "local" for the single user of a self-hosted install without accounts."""
+
+    __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class LeagueMember(Base):
+    """A user's access to a league. Leagues are stored once and shared by their members;
+    each member has their own team in it."""
+
+    __tablename__ = "league_members"
+    __table_args__ = (UniqueConstraint("user_id", "league_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    league_id: Mapped[int] = mapped_column(ForeignKey("leagues.id", ondelete="CASCADE"), index=True)
+    my_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    last_viewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class EspnCredential(Base):
+    """A user's ESPN session cookies, encrypted at rest (see crypto.py)."""
+
+    __tablename__ = "espn_credentials"
+    __table_args__ = (UniqueConstraint("user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    espn_s2_encrypted: Mapped[str] = mapped_column(String(2048))
+    swid_encrypted: Mapped[str] = mapped_column(String(512))
+    # "unverified" until a sync uses them, then "ok" or "expired" (ESPN refused them).
+    status: Mapped[str] = mapped_column(String(16), default="unverified")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 _engine: Engine | None = None
@@ -255,10 +304,14 @@ _session_factory: sessionmaker[Session] | None = None
 def init_db(database_url: str) -> Engine:
     """Create the engine and tables. Safe to call more than once (re-inits)."""
     global _engine, _session_factory
+    database_url = normalize_database_url(database_url)
     if database_url.startswith("sqlite:///") and database_url != "sqlite:///:memory:":
         Path(database_url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    _engine = create_engine(database_url, connect_args=connect_args)
+    # Hosted Postgres drops idle connections (Neon scales to zero): check before use.
+    _engine = create_engine(
+        database_url, connect_args=connect_args, pool_pre_ping=not database_url.startswith("sqlite")
+    )
     if database_url.startswith("sqlite"):
 
         @event.listens_for(_engine, "connect")
@@ -272,6 +325,15 @@ def init_db(database_url: str) -> Engine:
     _add_missing_columns(_engine)
     _session_factory = sessionmaker(_engine, expire_on_commit=False)
     return _engine
+
+
+def normalize_database_url(url: str) -> str:
+    """Hosted Postgres (Neon, Fly) hands out ``postgres://``/``postgresql://`` URLs;
+    SQLAlchemy needs the driver named to use psycopg 3."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url.removeprefix(prefix)
+    return url
 
 
 def _add_missing_columns(engine: Engine) -> None:

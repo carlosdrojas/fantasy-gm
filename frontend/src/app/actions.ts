@@ -2,7 +2,9 @@
 
 import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
+import { clerkClient } from "@clerk/nextjs/server";
 import { ApiError, api, type TradeAnalysis } from "@/lib/api";
+import { currentUserId } from "@/lib/auth";
 
 export type ActionState = { error?: string; ok?: boolean };
 
@@ -73,4 +75,45 @@ export async function quickAnswerAction(
   } catch (e) {
     return { error: e instanceof ApiError ? e.message : "Couldn't answer that." };
   }
+}
+
+export async function saveEspnCookiesAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const s2 = String(form.get("espn_s2") ?? "").trim();
+  const swid = String(form.get("swid") ?? "").trim();
+  if (!s2 || !swid) return { error: "Paste both cookie values." };
+  try {
+    await api.saveEspnCookies(s2, swid);
+  } catch (e) {
+    return { error: e instanceof ApiError ? e.message : "Couldn't save your cookies." };
+  }
+  refresh();
+  return { ok: true };
+}
+
+export async function deleteEspnCookiesAction(): Promise<void> {
+  await api.deleteEspnCookies();
+  refresh();
+}
+
+export async function pickTeamAction(leagueId: number, teamId: number | null): Promise<ActionState> {
+  try {
+    await api.pickTeam(leagueId, teamId);
+  } catch (e) {
+    return { error: e instanceof ApiError ? e.message : "Couldn't save your team." };
+  }
+  refresh();
+  return { ok: true };
+}
+
+/** Deletes this app's data (leagues, cookies, chats), then the Clerk account itself. */
+export async function deleteAccountAction(): Promise<ActionState> {
+  const userId = await currentUserId();
+  if (!userId) return { error: "You're not signed in." };
+  try {
+    await api.deleteAccount();
+    await (await clerkClient()).users.deleteUser(userId);
+  } catch (e) {
+    return { error: e instanceof ApiError ? e.message : "Couldn't delete your account." };
+  }
+  redirect("/");
 }

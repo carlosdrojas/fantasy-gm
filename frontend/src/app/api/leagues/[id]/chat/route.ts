@@ -1,5 +1,6 @@
 // Streams a chat turn from the backend to the browser (server-sent events passthrough).
 import { API_URL } from "@/lib/api";
+import { authHeader } from "@/lib/auth";
 
 export async function POST(request: Request, ctx: RouteContext<"/api/leagues/[id]/chat">) {
   const { id } = await ctx.params;
@@ -11,6 +12,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/leagues/[id
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...(await authHeader()),
         // A visitor's own Anthropic key, kept in their browser and passed straight through.
         ...(userKey ? { "X-Anthropic-Key": userKey } : {}),
       },

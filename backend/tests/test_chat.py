@@ -1,7 +1,9 @@
 import copy
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from anthropic import BadRequestError, InternalServerError
 from anthropic.types.beta import BetaMessage
 
 from fantasy_gm import chat
@@ -82,7 +84,9 @@ def test_tool_loop_streams_and_persists(league_id):
             message([{"type": "text", "text": "Juggernaut is stacked."}], "end_turn"),
         ]
     )
-    events = list(chat.run_chat(client, league_id, "conv-1", "How good is Juggernaut?"))
+    events = list(
+        chat.run_chat(client, chat.Conversation(league_id, "conv-1"), "How good is Juggernaut?")
+    )
     assert [e["type"] for e in events] == ["text", "tool", "text", "done"]
     assert events[1]["label"] == "Reading roster"
 
@@ -96,13 +100,13 @@ def test_tool_loop_streams_and_persists(league_id):
     assert req["model"] == "claude-opus-5" and req["fallbacks"] == "default"
     assert not any("eager_input_streaming" in t for t in req["tools"])
 
-    assert chat.transcript("conv-1") == [
+    assert chat.transcript(chat.Conversation(league_id, "conv-1")) == [
         {"role": "user", "text": "How good is Juggernaut?"},
         {"role": "assistant", "text": "Checking. \n\nJuggernaut is stacked."},
     ]
     # Next turn replays the whole stored conversation.
     client.responses.append(message([{"type": "text", "text": "Sure."}], "end_turn"))
-    list(chat.run_chat(client, league_id, "conv-1", "Thanks"))
+    list(chat.run_chat(client, chat.Conversation(league_id, "conv-1"), "Thanks"))
     assert len(client.requests[2]["messages"]) == 5
 
 
@@ -123,7 +127,7 @@ def test_bad_tool_input_is_reported_to_model(league_id):
             message([{"type": "text", "text": "Which team?"}], "end_turn"),
         ]
     )
-    list(chat.run_chat(client, league_id, "conv-2", "roster?"))
+    list(chat.run_chat(client, chat.Conversation(league_id, "conv-2"), "roster?"))
     result = client.requests[1]["messages"][-1]["content"][0]
     assert result["is_error"] and "No single team matches" in result["content"]
 
@@ -137,9 +141,9 @@ def test_truncated_tool_call_is_not_run_but_answered(league_id):
             ),
         ]
     )
-    events = list(chat.run_chat(client, league_id, "conv-3", "trades?"))
+    events = list(chat.run_chat(client, chat.Conversation(league_id, "conv-3"), "trades?"))
     assert events[-2]["type"] == "error"
-    hist = chat.load_history("conv-3")
+    hist = chat.load_history(chat.Conversation(league_id, "conv-3"))
     assert hist[-1]["content"][0]["tool_use_id"] == "tu_9"  # history stays valid for the next turn
 
 
@@ -180,7 +184,7 @@ def test_missing_credentials_reported(league_id):
         def _stream(self, **kwargs):
             raise TypeError('"Could not resolve authentication method. Expected one of api_key..."')
 
-    events = list(chat.run_chat(NoKey([]), league_id, "conv-4", "hi"))
+    events = list(chat.run_chat(NoKey([]), chat.Conversation(league_id, "conv-4"), "hi"))
     assert events[0]["type"] == "error" and "ANTHROPIC_API_KEY" in events[0]["message"]
 
 
@@ -199,3 +203,29 @@ def test_evaluate_trade_accepts_comma_separated_names(league_id):
     assert not is_error, content
     args = chat.TradeEvalArgs.model_validate({"partner": "x", "give": "A, B", "get": ["C"]})
     assert (args.give, args.get) == (["A", "B"], ["C"])
+
+
+def test_api_errors_explain_themselves(league_id):
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+    def failing(exc):
+        class Failing(FakeClient):
+            def _stream(self, **kwargs):
+                raise exc
+
+        return Failing([])
+
+    low = "Your credit balance is too low to access the Anthropic API."
+    bad = BadRequestError(
+        low,
+        response=httpx.Response(400, request=req),
+        body={"type": "error", "error": {"type": "invalid_request_error", "message": low}},
+    )
+    [event] = chat.run_chat(failing(bad), chat.Conversation(league_id, "conv-5"), "hi")
+    assert event == {"type": "error", "message": f"Anthropic API error (400): {low}"}
+
+    down = InternalServerError(
+        "boom", response=httpx.Response(500, request=req), body={"secret": "internals"}
+    )
+    [event] = chat.run_chat(failing(down), chat.Conversation(league_id, "conv-6"), "hi")
+    assert event["message"] == "Anthropic API error (500)."

@@ -34,8 +34,24 @@ class Settings(BaseSettings):
     # leagues is refused, background sync is off, and no ESPN cookies are needed.
     demo_mode: bool = False
 
+    # Accounts. Set to your Clerk instance's Frontend API URL (e.g.
+    # https://example.clerk.accounts.dev) to require sign-in for adding leagues. Unset, the
+    # app is single-user and uses the ESPN cookies above.
+    auth_issuer: str | None = None
+    # Origins allowed to have issued a token (Clerk's ``azp`` claim), e.g. your site's URL.
+    auth_authorized_parties: list[str] = []
+    # Encrypts users' ESPN cookies in the database. Required when accounts are on.
+    secret_key: SecretStr | None = None
+    max_leagues_per_user: int = 12
+    # A league is re-synced when someone opens it and its data is older than this.
+    stale_after_minutes: int = 60
+
     # For the league assistant. Also read from the plain ANTHROPIC_API_KEY variable; if unset,
     # the Anthropic SDK falls back to its own credential chain (e.g. an `ant auth login` profile).
+    @property
+    def accounts_enabled(self) -> bool:
+        return bool(self.auth_issuer)
+
     anthropic_api_key: SecretStr | None = Field(
         None, validation_alias=AliasChoices("FGM_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
     )

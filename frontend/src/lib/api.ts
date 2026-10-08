@@ -1,6 +1,7 @@
 // Typed client for the FastAPI backend. Server-side only (used by Server Components/Actions).
 import "server-only";
 import { cache } from "react";
+import { authHeader } from "@/lib/auth";
 
 export const API_URL = process.env.FGM_API_URL ?? "http://127.0.0.1:8000";
 
@@ -16,7 +17,8 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, { cache: "no-store", ...init });
+    const headers = { ...(await authHeader()), ...(init?.headers as Record<string, string> | undefined) };
+    res = await fetch(`${API_URL}${path}`, { cache: "no-store", ...init, headers });
   } catch {
     throw new ApiError(503, `Can't reach the backend at ${API_URL}. Is \`fgm serve\` running?`);
   }
@@ -68,6 +70,7 @@ export type League = {
   current_week: number | null;
   final_regular_week: number | null;
   my_team_id: number | null;
+  is_demo: boolean;
   settings: LeagueSettings;
   last_synced_at: string | null;
   live_updated_at: string | null;
@@ -123,6 +126,8 @@ export type PlayerGame =
     };
 
 export type LeagueOverview = League & {
+  /** Opening a stale league started a refresh from ESPN. */
+  syncing: boolean;
   teams: Team[];
   current_matchups: (Matchup & {
     home_lineup: LineupStatus | null;
@@ -265,9 +270,23 @@ export type TradeSort = "balanced" | "gain" | "likely";
 export type Health = {
   ok: boolean;
   demo_mode: boolean;
+  accounts_enabled: boolean;
   assistant_needs_user_key: boolean;
   espn_auth_configured: boolean;
 };
+
+export type EspnStatus = { status: "unverified" | "ok" | "expired"; updated_at: string; checked_at: string | null };
+
+export type Me =
+  | { signed_in: false; accounts_enabled: boolean }
+  | {
+      signed_in: true;
+      accounts_enabled: true;
+      espn: EspnStatus | null;
+      leagues: number;
+      max_leagues: number;
+      can_store_cookies: boolean;
+    };
 
 export type QuickQuestion = { id: string; label: string };
 export type QuickAnswer = { question: string; label: string; answer: string; source: "rules" };
@@ -277,6 +296,21 @@ export const getHealth = cache(() => request<Health>("/api/health"));
 
 export const api = {
   health: () => getHealth(),
+  me: () => request<Me>("/api/me"),
+  saveEspnCookies: (espn_s2: string, swid: string) =>
+    request<{ espn: EspnStatus }>("/api/me/espn", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ espn_s2, swid }),
+    }),
+  deleteEspnCookies: () => request<void>("/api/me/espn", { method: "DELETE" }),
+  deleteAccount: () => request<void>("/api/me", { method: "DELETE" }),
+  pickTeam: (id: number, teamId: number | null) =>
+    request<{ my_team_id: number | null }>(`/api/leagues/${id}/my-team`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ team_id: teamId }),
+    }),
   quickQuestions: () => request<QuickQuestion[]>("/api/assistant/questions"),
   quickAnswer: (id: number, question: string) =>
     request<QuickAnswer>(`/api/leagues/${id}/assistant/quick`, {

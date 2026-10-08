@@ -54,12 +54,23 @@ class LeagueData:
     matchups: list[Matchup]
     slot_counts: dict[str, int] = field(default_factory=dict)
     pro_games: list[ProGame] = field(default_factory=list)  # this week's NFL games
+    # The viewer's team. Leagues are shared between users, so it isn't the league's.
+    my_team_id: int | None = None
 
 
-def load_league(session: Session, league_id: int) -> LeagueData | None:
+# Pass as ``my_team_id`` to use the league's own team (see load_league).
+LEAGUE_TEAM: object = object()
+
+
+def load_league(
+    session: Session, league_id: int, my_team_id: int | object | None = LEAGUE_TEAM
+) -> LeagueData | None:
+    """Everything the analytics need. ``my_team_id`` defaults to the league's own
+    (the team of whoever's cookies synced it: the single user without accounts)."""
     league = session.get(League, league_id)
     if league is None:
         return None
+    me = league.my_team_id if my_team_id is LEAGUE_TEAM else my_team_id
     teams = {t.id: t for t in session.scalars(select(Team).where(Team.league_id == league_id))}
 
     points: dict[int, dict[tuple[int, str], float]] = defaultdict(dict)
@@ -124,6 +135,7 @@ def load_league(session: Session, league_id: int) -> LeagueData | None:
         matchups=matchups,
         slot_counts=dict((league.settings or {}).get("lineup_slot_counts") or {}),
         pro_games=pro_games,
+        my_team_id=me if me in teams else None,  # type: ignore[operator]
     )
 
 

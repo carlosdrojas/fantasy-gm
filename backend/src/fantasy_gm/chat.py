@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 
 from fantasy_gm.analytics.league import (
+    LEAGUE_TEAM,
     LeagueData,
     load_league,
     player_json,
@@ -169,11 +170,11 @@ class LeagueContext:
 
     @property
     def my_team_id(self) -> int:
-        if self.data.league.my_team_id is None:
+        if self.data.my_team_id is None:
             raise ToolError(
                 "The user's team isn't known (ESPN cookies not set). Ask which team is theirs."
             )
-        return self.data.league.my_team_id
+        return self.data.my_team_id
 
     def team_id(self, ref: str | None) -> int:
         if ref is None or not ref.strip():
@@ -265,7 +266,7 @@ def t_overview(ctx: LeagueContext, _: _NoArgs) -> dict:
         "current_week": lg.current_week,
         "regular_season_weeks": lg.final_regular_week,
         "settings": lg.settings,
-        "my_team": ctx.team_name(lg.my_team_id),
+        "my_team": ctx.team_name(ctx.data.my_team_id),
         "standings": [
             {
                 "id": t.id,
@@ -314,7 +315,7 @@ def t_roster(ctx: LeagueContext, args: TeamArg) -> dict:
     rows = sorted(ctx.data.rosters.get(tid, []), key=lambda r: -r.value.per_game)
     return {
         "team": ctx.team_name(tid),
-        "is_users_team": tid == ctx.data.league.my_team_id,
+        "is_users_team": tid == ctx.data.my_team_id,
         "players": [_slim(player_json(r)) for r in rows],
         "positional_strength": positional_strength(ctx.data)[tid],
     }
@@ -580,32 +581,52 @@ def _system(ctx: LeagueContext) -> list[dict[str, Any]]:
     )
     league_line = (
         f"League: {lg.name} ({lg.season}), week {lg.current_week} of {lg.final_regular_week}. "
-        f"User's team: {ctx.team_name(lg.my_team_id) or 'unknown'}. "
+        f"User's team: {ctx.team_name(ctx.data.my_team_id) or 'unknown'}. "
         f"Today: {utcnow():%a %Y-%m-%d} (UTC).{games_line}"
     )
     return [{"type": "text", "text": SYSTEM_PROMPT}, {"type": "text", "text": league_line}]
 
 
-def load_history(conversation_id: str) -> list[dict[str, Any]]:
+@dataclass(frozen=True)
+class Conversation:
+    """Where a chat's messages live. A conversation belongs to one user and one league;
+    ``user_id`` is None for anonymous demo visitors (then the random id is the secret)."""
+
+    league_id: int
+    id: str
+    user_id: int | None = None
+
+
+def load_history(conv: Conversation) -> list[dict[str, Any]]:
     with session_scope() as s:
         rows = s.scalars(
             select(ChatMessage)
-            .where(ChatMessage.conversation_id == conversation_id)
+            .where(
+                ChatMessage.conversation_id == conv.id,
+                ChatMessage.league_id == conv.league_id,
+                ChatMessage.user_id.is_(None)
+                if conv.user_id is None
+                else ChatMessage.user_id == conv.user_id,
+            )
             .order_by(ChatMessage.id)
         )
         return [{"role": r.role, "content": r.content} for r in rows]
 
 
-def _save(league_id: int, conversation_id: str, role: str, content: Any) -> None:
+def _save(conv: Conversation, role: str, content: Any) -> None:
     with session_scope() as s:
         s.add(
             ChatMessage(
-                league_id=league_id, conversation_id=conversation_id, role=role, content=content
+                league_id=conv.league_id,
+                conversation_id=conv.id,
+                user_id=conv.user_id,
+                role=role,
+                content=content,
             )
         )
 
 
-def _answer_unrun(league_id: int, conversation_id: str, history: list, content: list[dict]) -> None:
+def _answer_unrun(conv: Conversation, history: list, content: list[dict]) -> None:
     results = [
         {
             "type": "tool_result",
@@ -617,23 +638,39 @@ def _answer_unrun(league_id: int, conversation_id: str, history: list, content: 
         if b["type"] == "tool_use"
     ]
     history.append({"role": "user", "content": results})
-    _save(league_id, conversation_id, "user", results)
+    _save(conv, "user", results)
+
+
+def _status_error_message(e: anthropic.APIStatusError) -> str:
+    """Anthropic's own explanation for a request error (e.g. "Your credit balance is too
+    low"), which is about the caller's key and safe to show; just the code for a 5xx."""
+    detail = None
+    if e.status_code < 500 and isinstance(e.body, dict):
+        err = e.body.get("error")
+        if isinstance(err, dict) and isinstance(err.get("message"), str):
+            detail = err["message"]
+    if detail:
+        return f"Anthropic API error ({e.status_code}): {detail}"
+    return f"Anthropic API error ({e.status_code})."
 
 
 def run_chat(
-    client: anthropic.Anthropic, league_id: int, conversation_id: str, user_text: str
+    client: anthropic.Anthropic,
+    conv: Conversation,
+    user_text: str,
+    my_team_id: int | object | None = LEAGUE_TEAM,
 ) -> Iterator[dict[str, Any]]:
     """Run one user turn. Yields UI events: text, tool, error, done."""
     with session_scope() as s:
-        data = load_league(s, league_id)
+        data = load_league(s, conv.league_id, my_team_id)
     if data is None:
         yield {"type": "error", "message": "League not found."}
         return
     ctx = LeagueContext(data)
-    history = load_history(conversation_id)
+    history = load_history(conv)
     user_msg = {"role": "user", "content": [{"type": "text", "text": user_text}]}
     history.append(user_msg)
-    _save(league_id, conversation_id, "user", user_msg["content"])
+    _save(conv, "user", user_msg["content"])
     tools = [t.definition() for t in TOOLS]
 
     json_retries = 0
@@ -681,8 +718,8 @@ def run_chat(
         except anthropic.AuthenticationError:
             yield {
                 "type": "error",
-                "message": "Anthropic API key missing or invalid. Check the key you added, or "
-                "ANTHROPIC_API_KEY in backend/.env.",
+                "message": "Anthropic API key missing or invalid. Check the key you added "
+                "(or ANTHROPIC_API_KEY in backend/.env when running locally).",
             }
             return
         except anthropic.RateLimitError:
@@ -693,7 +730,7 @@ def run_chat(
             return
         except anthropic.APIStatusError as e:
             log.exception("Anthropic API error")
-            yield {"type": "error", "message": f"Anthropic API error ({e.status_code})."}
+            yield {"type": "error", "message": _status_error_message(e)}
             return
         except anthropic.APIConnectionError:
             yield {"type": "error", "message": "Couldn't reach the Anthropic API."}
@@ -704,14 +741,14 @@ def run_chat(
 
         assistant = {"role": "assistant", "content": _block_params(response.content)}
         history.append(assistant)
-        _save(league_id, conversation_id, "assistant", assistant["content"])
+        _save(conv, "assistant", assistant["content"])
 
         tool_uses = [b for b in response.content if b.type == "tool_use"]
         if response.stop_reason in ("refusal", "max_tokens"):
             # A tool call may have been cut off mid-input: never run it, but answer it so
             # the stored history stays valid (append-only; earlier turns are never edited).
             if any(b["type"] == "tool_use" for b in assistant["content"]):
-                _answer_unrun(league_id, conversation_id, history, assistant["content"])
+                _answer_unrun(conv, history, assistant["content"])
             reason = (
                 "declined to answer that" if response.stop_reason == "refusal" else "was cut off"
             )
@@ -735,16 +772,16 @@ def run_chat(
             )
         tool_msg = {"role": "user", "content": results}
         history.append(tool_msg)
-        _save(league_id, conversation_id, "user", results)
+        _save(conv, "user", results)
     else:
         yield {"type": "error", "message": "Stopped after too many tool calls."}
     yield {"type": "done"}
 
 
-def transcript(conversation_id: str) -> list[dict[str, Any]]:
+def transcript(conv: Conversation) -> list[dict[str, Any]]:
     """User-visible transcript: user text and assistant text only."""
     out: list[dict[str, Any]] = []
-    for m in load_history(conversation_id):
+    for m in load_history(conv):
         texts = [b.get("text", "") for b in m["content"] if b.get("type") == "text"]
         if not texts:
             continue

@@ -13,7 +13,7 @@ import httpx
 SEASON = 2026
 LEAGUE_ID = "4242"
 CURRENT_WEEK = 4
-MY_SWID = "{MY-SWID}"
+MY_SWID = "{11111111-2222-3333-4444-555555555555}"
 
 # eligible slot ids by position
 ELIGIBLE = {
@@ -276,6 +276,14 @@ def build_league() -> dict[str, Any]:
                     "scoringPeriodId": 3,
                     "items": [{"type": "LINEUP", "playerId": 1013, "fromTeamId": 0, "toTeamId": 0}],
                 },
+                {
+                    "id": "tx-failed-claim",
+                    "type": "WAIVER",
+                    "status": "FAILED_INVALIDPLAYERSOURCE",  # a real ESPN value, 26 chars
+                    "teamId": 3,
+                    "scoringPeriodId": 3,
+                    "items": [{"type": "ADD", "playerId": 1000, "fromTeamId": 0, "toTeamId": 3}],
+                },
             ],
             4: [
                 {
@@ -334,6 +342,8 @@ class FakeEspn:
         self.scoreboard = build_scoreboard()
         self.calls: list[httpx.Request] = []
         self.fail_with: list[int] = []  # status codes to return, popped per request
+        # When set, the league is private: only these espn_s2 cookie values may read it.
+        self.allowed_s2: set[str] | None = None
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -346,6 +356,14 @@ class FakeEspn:
             return httpx.Response(200, json=self.scoreboard)
         if not request.url.path.endswith(f"/seasons/{SEASON}/segments/0/leagues/{LEAGUE_ID}"):
             return httpx.Response(404, text="not found")
+        if self.allowed_s2 is not None:
+            cookies = dict(
+                c.strip().split("=", 1)
+                for c in request.headers.get("cookie", "").split(";")
+                if "=" in c
+            )
+            if cookies.get("espn_s2") not in self.allowed_s2:
+                return httpx.Response(401, json={"messages": ["not authorized"]})
         views = request.url.params.get_list("view")
         period = int(request.url.params.get("scoringPeriodId") or CURRENT_WEEK)
         lg = self.league

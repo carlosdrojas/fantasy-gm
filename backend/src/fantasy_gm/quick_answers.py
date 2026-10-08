@@ -38,7 +38,7 @@ def answer(data: LeagueData, question_id: str, odds: Callable[[], dict] | None =
     q = QUESTIONS_BY_ID.get(question_id)
     if q is None:
         raise KeyError(question_id)
-    me = data.league.my_team_id
+    me = data.my_team_id
     if me is None or me not in data.teams:
         raise NoTeamError("Your team isn't known for this league, so there's nothing to answer.")
     return q.answer(data, me, odds or (lambda: simulate(data)))

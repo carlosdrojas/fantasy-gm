@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 from tenacity import wait_none
 
@@ -25,15 +27,26 @@ def client(fake: FakeEspn) -> EspnClient:
     return EspnClient(espn_s2="s2", swid=MY_SWID, transport=fake.transport())
 
 
+# FGM_TEST_DATABASE_URL=postgresql://... runs the suite on Postgres (tables are dropped
+# after each test); otherwise each test gets a fresh SQLite file.
+PG_URL = os.environ.get("FGM_TEST_DATABASE_URL")
+
+
 @pytest.fixture
-def settings(tmp_path) -> Settings:
-    return Settings(
-        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+def settings(tmp_path):
+    yield Settings(
+        database_url=PG_URL or f"sqlite:///{tmp_path / 'test.db'}",
         espn_s2="s2",
         espn_swid=MY_SWID,
         sync_interval_minutes=0,
         _env_file=None,
     )
+    if PG_URL:
+        from fantasy_gm import db
+
+        if db._engine is not None:
+            db._engine.dispose()
+            db.Base.metadata.drop_all(db._engine)
 
 
 @pytest.fixture
@@ -43,6 +56,10 @@ def db(settings: Settings, fake: FakeEspn, monkeypatch) -> Settings:
     monkeypatch.setattr(
         sync_module,
         "make_espn_client",
-        lambda s: EspnClient(espn_s2="s2", swid=MY_SWID, transport=fake.transport()),
+        lambda s, cookies=None: EspnClient(
+            espn_s2=cookies.espn_s2 if cookies else None,
+            swid=cookies.swid if cookies else None,
+            transport=fake.transport(),
+        ),
     )
     return settings

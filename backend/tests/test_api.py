@@ -81,7 +81,11 @@ def test_free_agents_exclude_rostered(api):
 
 def test_transactions(api):
     txns = api.get(f"/api/leagues/{api.league_id}/transactions").json()
-    assert [t["type"] for t in txns] == ["TRADE_ACCEPT", "WAIVER"]
+    assert [(t["type"], t["status"]) for t in txns] == [
+        ("TRADE_ACCEPT", "EXECUTED"),
+        ("WAIVER", "EXECUTED"),
+        ("WAIVER", "FAILED_INVALIDPLAYERSOURCE"),  # undated, so last
+    ]
     assert txns[1]["items"][0]["player"]["name"] == "QB"
 
 

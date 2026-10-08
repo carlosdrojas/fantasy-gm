@@ -1,24 +1,30 @@
+import { SignInButton } from "@clerk/nextjs";
 import Link from "next/link";
 import { AddLeagueForm } from "@/components/add-league-form";
 import { Card, ErrorPanel, record } from "@/components/ui";
-import { ApiError, api, type League, type Team } from "@/lib/api";
+import { ApiError, api, type League, type Me, type Team } from "@/lib/api";
 import { REPO_URL } from "@/lib/site";
 
 export default async function Home() {
-  let leagues, health;
+  let leagues, health, me;
   try {
-    [leagues, health] = await Promise.all([api.leagues(), api.health()]);
+    [leagues, health, me] = await Promise.all([api.leagues(), api.health(), api.me()]);
   } catch (e) {
     return <ErrorPanel message={e instanceof ApiError ? e.message : String(e)} />;
   }
+  const demoLeague = leagues.find((lg) => lg.is_demo);
+  const mine = leagues.filter((lg) => !lg.is_demo);
 
-  if (health.demo_mode) return <DemoHome league={leagues[0]} />;
+  if (health.accounts_enabled && !me.signed_in) return <DemoHome league={demoLeague} canSignIn />;
+  if (health.demo_mode && !health.accounts_enabled) return <DemoHome league={demoLeague} />;
 
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-semibold">Your leagues</h1>
 
-      {!health.espn_auth_configured && (
+      {me.signed_in && <CookieNotice me={me} />}
+
+      {!health.accounts_enabled && !health.espn_auth_configured && (
         <p className="rounded-lg border border-line bg-surface-2 px-4 py-3 text-sm text-ink-2">
           ESPN cookies aren&apos;t set, so only public leagues will load and your team won&apos;t be
           detected. Add <code>FGM_ESPN_S2</code> and <code>FGM_ESPN_SWID</code> to{" "}
@@ -26,15 +32,32 @@ export default async function Home() {
         </p>
       )}
 
+      {mine.length === 0 && health.accounts_enabled && (
+        <p className="text-sm text-ink-2">
+          No leagues yet. Add one below, or look around the{" "}
+          {demoLeague ? (
+            <Link href={`/leagues/${demoLeague.id}`} className="text-link hover:underline">
+              demo league
+            </Link>
+          ) : (
+            "demo league"
+          )}{" "}
+          first.
+        </p>
+      )}
+
       {leagues.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {leagues.map((lg) => (
+          {[...mine, ...(demoLeague ? [demoLeague] : [])].map((lg) => (
             <Link
               key={lg.id}
               href={`/leagues/${lg.id}`}
               className="rounded-xl border border-line bg-surface p-4 transition-colors hover:bg-surface-2"
             >
-              <div className="font-medium text-ink">{lg.name ?? `League ${lg.external_id}`}</div>
+              <div className="font-medium text-ink">
+                {lg.name ?? `League ${lg.external_id}`}
+                {lg.is_demo && <span className="ml-2 text-xs font-normal text-muted">Sample data</span>}
+              </div>
               <div className="mt-0.5 text-xs text-muted">
                 {lg.season} · Week {lg.current_week ?? "–"} · {lg.settings.team_count} teams
               </div>
@@ -68,7 +91,31 @@ const FEATURES = [
   ["Assistant", "Instant answers from the analytics, or Claude with your own API key."],
 ];
 
-function DemoHome({ league }: { league?: League & { my_team: Team | null } }) {
+function CookieNotice({ me }: { me: Extract<Me, { signed_in: true }> }) {
+  if (me.espn?.status === "expired") {
+    return (
+      <p className="rounded-lg border border-critical px-4 py-3 text-sm text-ink">
+        ESPN stopped accepting your cookies, so private leagues can&apos;t sync.{" "}
+        <Link href="/settings" className="text-link hover:underline">
+          Paste fresh ones in Settings
+        </Link>
+        .
+      </p>
+    );
+  }
+  if (me.espn) return null;
+  return (
+    <p className="rounded-lg border border-line bg-surface-2 px-4 py-3 text-sm text-ink-2">
+      Public leagues work as is. For a private league (most are), first{" "}
+      <Link href="/settings" className="text-link hover:underline">
+        add your ESPN cookies in Settings
+      </Link>
+      . They also let us find your team automatically.
+    </p>
+  );
+}
+
+function DemoHome({ league, canSignIn = false }: { league?: League & { my_team: Team | null }; canSignIn?: boolean }) {
   return (
     <div className="space-y-10">
       <section className="max-w-2xl space-y-4 pt-4">
@@ -88,9 +135,17 @@ function DemoHome({ league }: { league?: League & { my_team: Team | null } }) {
               Open the demo league
             </Link>
           )}
-          <a href={REPO_URL} className="rounded-md border border-line px-4 py-2 text-sm text-ink hover:bg-surface-2">
-            Run it on your league
-          </a>
+          {canSignIn ? (
+            <SignInButton mode="modal">
+              <button className="rounded-md border border-line px-4 py-2 text-sm text-ink hover:bg-surface-2">
+                Sign in to add your league
+              </button>
+            </SignInButton>
+          ) : (
+            <a href={REPO_URL} className="rounded-md border border-line px-4 py-2 text-sm text-ink hover:bg-surface-2">
+              Run it on your league
+            </a>
+          )}
         </div>
         {league?.my_team && (
           <p className="text-xs text-muted">

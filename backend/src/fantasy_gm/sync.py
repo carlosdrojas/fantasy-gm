@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from fantasy_gm import demo
+from fantasy_gm import credentials, demo
 from fantasy_gm.config import Settings
+from fantasy_gm.credentials import Cookies
 from fantasy_gm.db import (
     League,
     Matchup,
@@ -32,7 +34,7 @@ from fantasy_gm.domain import (
     RosterSlotData,
 )
 from fantasy_gm.espn.adapter import EspnSource
-from fantasy_gm.espn.client import EspnClient
+from fantasy_gm.espn.client import EspnAuthError, EspnClient
 
 log = logging.getLogger(__name__)
 
@@ -318,7 +320,13 @@ def needs_live_refresh(session: Session, league: League, now: datetime | None = 
     return games_active(games, now)
 
 
-def refresh_live(league_id: int, settings: Settings, *, force: bool = False) -> bool:
+def refresh_live(
+    league_id: int,
+    settings: Settings,
+    *,
+    force: bool = False,
+    candidates: list[Cookies | None] | None = None,
+) -> bool:
     """Refresh a league's in-game data if games are on (or ``force``). Returns True if it ran."""
     with session_scope() as s:
         league = s.get(League, league_id)
@@ -330,8 +338,11 @@ def refresh_live(league_id: int, settings: Settings, *, force: bool = False) -> 
             return False
         ext, season, week = league.external_id, league.season, league.current_week
 
-    with make_espn_client(settings) as client:
-        snap = EspnSource(client).fetch_live(ext, season, week)
+    snap = with_cookies(
+        candidates or credentials.for_league(league_id, settings),
+        settings,
+        lambda c: EspnSource(c).fetch_live(ext, season, week),
+    )
     with session_scope() as s:
         league = s.get(League, league_id)
         if league is None:  # deleted mid-refresh
@@ -340,12 +351,43 @@ def refresh_live(league_id: int, settings: Settings, *, force: bool = False) -> 
     return True
 
 
-def make_espn_client(settings: Settings) -> EspnClient:
-    s2 = settings.espn_s2.get_secret_value() if settings.espn_s2 else None
-    return EspnClient(espn_s2=s2, swid=settings.espn_swid)
+def make_espn_client(settings: Settings, cookies: Cookies | None) -> EspnClient:
+    if cookies is None:
+        return EspnClient()
+    return EspnClient(espn_s2=cookies.espn_s2, swid=cookies.swid)
 
 
-def sync_league(league_id: int, settings: Settings) -> SyncRun:
+def with_cookies[T](
+    candidates: list[Cookies | None],
+    settings: Settings,
+    fn: Callable[[EspnClient], T],
+    *,
+    mark_failures: bool = True,
+) -> T:
+    """Run ``fn`` with each set of cookies until ESPN accepts one.
+
+    Users' cookies that ESPN accepts are marked ok; refused ones are marked expired,
+    unless ``mark_failures`` is off (a user trying a league they may not belong to).
+    """
+    error: EspnAuthError | None = None
+    for cookies in candidates or [None]:
+        try:
+            with make_espn_client(settings, cookies) as client:
+                result = fn(client)
+        except EspnAuthError as e:
+            error = e
+            if mark_failures:
+                credentials.mark(cookies, ok=False)
+            continue
+        credentials.mark(cookies, ok=True)
+        return result
+    assert error is not None
+    raise error
+
+
+def sync_league(
+    league_id: int, settings: Settings, candidates: list[Cookies | None] | None = None
+) -> SyncRun:
     """Sync one stored league from its platform, recording the run's outcome."""
     with session_scope() as s:
         league = s.get(League, league_id)
@@ -373,8 +415,11 @@ def sync_league(league_id: int, settings: Settings) -> SyncRun:
         if platform == demo.PLATFORM:
             snap = demo.build_snapshot()
         else:
-            with make_espn_client(settings) as client:
-                snap = EspnSource(client).fetch_snapshot(ext, season, transaction_weeks=txn_weeks)
+            snap = with_cookies(
+                candidates or credentials.for_league(league_id, settings),
+                settings,
+                lambda c: EspnSource(c).fetch_snapshot(ext, season, transaction_weeks=txn_weeks),
+            )
         with session_scope() as s:
             store_snapshot(s, snap)
     except Exception as e:  # recorded on the run and re-raised for the caller
@@ -393,10 +438,19 @@ def sync_league(league_id: int, settings: Settings) -> SyncRun:
     return run
 
 
-def add_espn_league(external_id: str, season: int, settings: Settings) -> int:
+def add_espn_league(
+    external_id: str,
+    season: int,
+    settings: Settings,
+    candidates: list[Cookies | None] | None = None,
+) -> int:
     """Fetch a league for the first time and store it. Returns the new League.id."""
-    with make_espn_client(settings) as client:
-        snap = EspnSource(client).fetch_snapshot(external_id, season)
+    snap = with_cookies(
+        candidates or [credentials.settings_cookies(settings)],
+        settings,
+        lambda c: EspnSource(c).fetch_snapshot(external_id, season),
+        mark_failures=False,
+    )
     with session_scope() as s:
         league = store_snapshot(s, snap)
         s.flush()

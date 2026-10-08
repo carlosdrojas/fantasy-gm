@@ -15,6 +15,9 @@ dependencies = [
     "apscheduler>=3.10,<4",
     "scipy>=1.13",
     "anthropic>=1.0",
+    "pyjwt[crypto]>=2.9",  # verifying Clerk session tokens
+    "cryptography>=43",  # encrypting stored ESPN cookies
+    "psycopg[binary]>=3.2",  # Postgres in production
 ]
 
 [project.optional-dependencies]

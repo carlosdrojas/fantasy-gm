@@ -1,7 +1,9 @@
 import { LiveBadge, LiveRefresher } from "@/components/live";
 import { LeagueTabs, SyncButton } from "@/components/league-nav";
+import { TeamPicker } from "@/components/team-picker";
 import { ErrorPanel } from "@/components/ui";
-import { ApiError, api, getHealth } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
+import { REPO_URL } from "@/lib/site";
 
 function ago(iso: string | null) {
   if (!iso) return "never";
@@ -14,9 +16,9 @@ function ago(iso: string | null) {
 
 export default async function LeagueLayout({ children, params }: LayoutProps<"/leagues/[id]">) {
   const id = Number((await params).id);
-  let league, health;
+  let league;
   try {
-    [league, health] = await Promise.all([api.league(id), getHealth()]);
+    league = await api.league(id);
   } catch (e) {
     return <ErrorPanel message={e instanceof ApiError ? e.message : String(e)} />;
   }
@@ -24,6 +26,15 @@ export default async function LeagueLayout({ children, params }: LayoutProps<"/l
 
   return (
     <div className="space-y-6">
+      {league.is_demo && (
+        <p className="rounded-lg bg-accent px-4 py-2 text-xs text-accent-ink">
+          <strong>Demo league.</strong> Real NFL players and weekly points; the teams, managers and moves are made up.
+          Read-only.{" "}
+          <a href={REPO_URL} className="font-semibold underline underline-offset-2">
+            View the code on GitHub
+          </a>
+        </p>
+      )}
       <div className="border-b border-line">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -37,7 +48,11 @@ export default async function LeagueLayout({ children, params }: LayoutProps<"/l
               {league.season} season, week {league.current_week ?? "–"}
               {league.final_regular_week ? ` of ${league.final_regular_week}` : ""},{" "}
               {league.settings.reception_points ? `${league.settings.reception_points} PPR` : "standard scoring"}.{" "}
-              {health.demo_mode ? "Sample data, frozen at this week." : `Synced ${ago(league.last_synced_at)}.`}
+              {league.is_demo
+                ? "Sample data, frozen at this week."
+                : league.syncing
+                  ? "Refreshing from ESPN now; reload in a moment for the latest."
+                  : `Synced ${ago(league.last_synced_at)}.`}
             </p>
             {failed && (
               <p className="mt-2 text-xs text-critical">
@@ -45,10 +60,11 @@ export default async function LeagueLayout({ children, params }: LayoutProps<"/l
               </p>
             )}
           </div>
-          {!health.demo_mode && <SyncButton leagueId={id} />}
+          {!league.is_demo && <SyncButton leagueId={id} />}
         </div>
         <LeagueTabs leagueId={id} myTeamId={league.my_team_id} />
       </div>
+      {!league.is_demo && league.my_team_id == null && <TeamPicker leagueId={id} teams={league.teams} />}
       <LiveRefresher active={league.live.active} />
       {children}
     </div>

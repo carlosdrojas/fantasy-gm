@@ -78,7 +78,7 @@ def test_matchup_bye_has_no_away():
 def test_transactions_skip_lineup_moves():
     txns = build_league()["transactions"][3]
     out = parse.parse_transactions({"transactions": txns})
-    assert [t.external_id for t in out] == ["tx-waiver"]
+    assert [t.external_id for t in out] == ["tx-waiver", "tx-failed-claim"]
     t = out[0]
     assert t.bid_amount == 7 and t.proposed_at.year == 2026
     assert t.items[0].from_team_external_id is None and t.items[0].to_team_external_id == "1"

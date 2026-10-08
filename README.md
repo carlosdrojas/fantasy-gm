@@ -71,6 +71,37 @@ FGM_DATABASE_URL=sqlite:///$PWD/backend/data/demo.db FGM_DEMO_MODE=true API_PORT
 To refresh the player pool for a newer week (needs ESPN cookies and a league you can read):
 `cd backend && .venv/bin/python scripts/export_demo_pool.py <espn_league_id> --week 6`.
 
+## Accounts
+
+Setting `FGM_AUTH_ISSUER` (backend) and the Clerk keys (frontend) turns the app into a
+multi-user site. People sign in with Clerk and add their own ESPN leagues. The demo league
+stays public, and nobody can change it.
+
+- **Sign-in.** The frontend forwards each user's short-lived Clerk session token. The
+  backend verifies it against Clerk's published keys and checks the issuer and the allowed
+  origins. It never handles passwords.
+- **Shared leagues.** A league is stored once, however many users add it. Each member
+  has their own team in it and their own assistant chats. Joining a league someone else
+  already added still asks ESPN, with the joiner's own cookies, whether they can see it,
+  so knowing a league ID isn't enough to read a private league.
+- **ESPN cookies.** Each user's cookies are encrypted with `FGM_SECRET_KEY` (Fernet)
+  before they're stored, and are only used to read leagues that user belongs to. A sync
+  tries each member's cookies in turn. If ESPN refuses a user's cookies, they're marked
+  expired and that user is asked for fresh ones.
+- **Syncing.** Opening a league whose data is over an hour old (`FGM_STALE_AFTER_MINUTES`)
+  refreshes it in the background. The scheduler only syncs leagues that someone opened
+  in the last week.
+- **Limits.** 12 leagues per user (`FGM_MAX_LEAGUES_PER_USER`), and manual syncs at most
+  every 2 minutes. Claude chat only runs on the visitor's own Anthropic key.
+- **Deleting.** Users can remove a league, their cookies, or their whole account. A league
+  is deleted once nobody has it.
+
+Frontend environment: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY`. Without
+them, there's no sign-in and the app runs single-user, as above.
+
+Run the test suite on Postgres with
+`FGM_TEST_DATABASE_URL=postgresql://user@host/db .venv/bin/pytest`. It drops all tables.
+
 ## Deploying the demo
 
 The backend runs as one always-on container (`backend/Dockerfile`, demo mode by default).

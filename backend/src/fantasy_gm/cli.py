@@ -1,4 +1,4 @@
-"""Command line: `fgm add <league_id>`, `fgm sync`, `fgm serve`, `fgm leagues`."""
+"""Command line: `fgm add <league_id>`, `fgm sync`, `fgm serve`, `fgm leagues`, `fgm demo`."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sqlalchemy import select
 from fantasy_gm.config import get_settings
 from fantasy_gm.db import League, init_db, session_scope
 from fantasy_gm.espn.client import EspnError
-from fantasy_gm.sync import add_espn_league, sync_league
+from fantasy_gm.sync import add_espn_league, ensure_demo_league, sync_league
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -31,6 +31,13 @@ def add(league_id: str, season: int = typer.Option(date.today().year)) -> None:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(1) from e
     typer.secho(f"Added league {league_id} ({season}) as #{new_id}", fg="green")
+
+
+@app.command()
+def demo() -> None:
+    """Add (or rebuild) the made-up demo league. Needs no ESPN access."""
+    new_id = ensure_demo_league()
+    typer.secho(f"Demo league ready as #{new_id}", fg="green")
 
 
 @app.command()

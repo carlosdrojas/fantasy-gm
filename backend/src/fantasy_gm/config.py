@@ -30,6 +30,10 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # Public demo: serve only the built-in made-up league. Adding, deleting and syncing
+    # leagues is refused, background sync is off, and no ESPN cookies are needed.
+    demo_mode: bool = False
+
     # For the league assistant. Also read from the plain ANTHROPIC_API_KEY variable; if unset,
     # the Anthropic SDK falls back to its own credential chain (e.g. an `ant auth login` profile).
     anthropic_api_key: SecretStr | None = Field(

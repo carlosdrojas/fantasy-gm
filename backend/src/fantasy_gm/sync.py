@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from fantasy_gm import demo
 from fantasy_gm.config import Settings
 from fantasy_gm.db import (
     League,
@@ -360,7 +361,7 @@ def sync_league(league_id: int, settings: Settings) -> SyncRun:
         s.flush()
         run_id = run.id
 
-    if platform != "espn":
+    if platform not in ("espn", demo.PLATFORM):
         raise ValueError(f"Unsupported platform {platform!r}")
 
     txn_weeks = None
@@ -369,8 +370,11 @@ def sync_league(league_id: int, settings: Settings) -> SyncRun:
 
     error: str | None = None
     try:
-        with make_espn_client(settings) as client:
-            snap = EspnSource(client).fetch_snapshot(ext, season, transaction_weeks=txn_weeks)
+        if platform == demo.PLATFORM:
+            snap = demo.build_snapshot()
+        else:
+            with make_espn_client(settings) as client:
+                snap = EspnSource(client).fetch_snapshot(ext, season, transaction_weeks=txn_weeks)
         with session_scope() as s:
             store_snapshot(s, snap)
     except Exception as e:  # recorded on the run and re-raised for the caller
@@ -394,6 +398,19 @@ def add_espn_league(external_id: str, season: int, settings: Settings) -> int:
     with make_espn_client(settings) as client:
         snap = EspnSource(client).fetch_snapshot(external_id, season)
     with session_scope() as s:
+        league = store_snapshot(s, snap)
+        s.flush()
+        return league.id
+
+
+def ensure_demo_league() -> int:
+    """Store (or refresh in place) the made-up demo league. Returns its League.id."""
+    snap = demo.build_snapshot()
+    with session_scope() as s:
+        for old in s.scalars(
+            select(League).where(League.platform == demo.PLATFORM, League.season != snap.season)
+        ):
+            s.delete(old)  # a pool from an older season
         league = store_snapshot(s, snap)
         s.flush()
         return league.id

@@ -47,6 +47,28 @@ cd frontend && FGM_API_URL=http://127.0.0.1:8765 pnpm dev
 | `fgm leagues` | List imported leagues |
 | `fgm sync [league#]` | Re-sync one or all leagues |
 | `fgm serve [--port] [--reload]` | Run the API with background sync |
+| `fgm demo` | Add (or rebuild) the made-up demo league. No ESPN access needed |
+
+## Demo mode
+
+`FGM_DEMO_MODE=true` turns the backend into a public, read-only demo. It serves only a
+made-up 10-team league, "Gridiron Think Tank". Adding, deleting and syncing leagues returns
+403, the Claude assistant is off, background sync doesn't run, and no ESPN cookies or API
+keys are needed.
+
+The demo league uses **real NFL players and their real weekly fantasy points** (PPR, from
+ESPN) from `backend/src/fantasy_gm/demo/pool.json`. **The teams, managers, draft, waiver
+claims and schedule are made up.** A seeded simulation drafts the teams, sets lineups,
+makes claims and scores each week from the starters' real points, so the league comes out
+the same on every build. The demo user manages "Two-Minute Drill": 1–3 despite a top-four
+roster.
+
+```bash
+FGM_DATABASE_URL=sqlite:///$PWD/backend/data/demo.db FGM_DEMO_MODE=true API_PORT=8766 WEB_PORT=3001 ./dev.sh
+```
+
+To refresh the player pool for a newer week (needs ESPN cookies and a league you can read):
+`cd backend && .venv/bin/python scripts/export_demo_pool.py <espn_league_id> --week 6`.
 
 ## How the numbers work
 

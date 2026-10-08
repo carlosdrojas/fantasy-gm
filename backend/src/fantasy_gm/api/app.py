@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from fantasy_gm import chat
+from fantasy_gm import chat, demo
 from fantasy_gm.analytics.league import (
     LeagueData,
     lineup_status,
@@ -44,7 +44,13 @@ from fantasy_gm.db import (
     utcnow,
 )
 from fantasy_gm.espn.client import EspnAuthError, EspnError, EspnNotFoundError
-from fantasy_gm.sync import add_espn_league, games_active, refresh_live, sync_league
+from fantasy_gm.sync import (
+    add_espn_league,
+    ensure_demo_league,
+    games_active,
+    refresh_live,
+    sync_league,
+)
 
 log = logging.getLogger(__name__)
 
@@ -96,9 +102,13 @@ def _sync_key(data: LeagueData) -> tuple:
     return (data.league.id, data.league.last_synced_at)
 
 
-def sync_all(settings: Settings) -> None:
+def _espn_league_ids() -> list[int]:
     with session_scope() as s:
-        ids = list(s.scalars(select(League.id)))
+        return list(s.scalars(select(League.id).where(League.platform == "espn")))
+
+
+def sync_all(settings: Settings) -> None:
+    ids = _espn_league_ids()
     for lid in ids:
         lock = _lock_for(lid)
         if not lock.acquire(blocking=False):
@@ -113,8 +123,7 @@ def sync_all(settings: Settings) -> None:
 
 def live_all(settings: Settings) -> None:
     """Scheduler tick: refresh in-game data for every league whose games are on."""
-    with session_scope() as s:
-        ids = list(s.scalars(select(League.id)))
+    ids = _espn_league_ids()
     for lid in ids:
         lock = _lock_for(lid)
         if not lock.acquire(blocking=False):
@@ -133,9 +142,13 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         init_db(settings.database_url)
+        if settings.demo_mode:
+            ensure_demo_league()
         scheduler = None
-        if start_scheduler and (
-            settings.sync_interval_minutes > 0 or settings.live_interval_seconds > 0
+        if (
+            start_scheduler
+            and not settings.demo_mode
+            and (settings.sync_interval_minutes > 0 or settings.live_interval_seconds > 0)
         ):
             scheduler = BackgroundScheduler()
             if settings.sync_interval_minutes > 0:
@@ -174,11 +187,29 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
         with session_scope() as s:
             yield s
 
-    def league_data(league_id: int, s: Session = Depends(db)) -> LeagueData:
-        data = load_league(s, league_id)
-        if data is None:
+    def visible_leagues():
+        """In demo mode only the demo league exists, whatever else is in the database."""
+        q = select(League)
+        return q.where(League.platform == demo.PLATFORM) if settings.demo_mode else q
+
+    def visible_league(league_id: int, s: Session = Depends(db)) -> League:
+        league = s.scalar(visible_leagues().where(League.id == league_id))
+        if league is None:
             raise HTTPException(404, "League not found")
+        return league
+
+    def league_data(
+        league: League = Depends(visible_league), s: Session = Depends(db)
+    ) -> LeagueData:
+        data = load_league(s, league.id)
+        assert data is not None
         return data
+
+    def not_demo() -> None:
+        if settings.demo_mode:
+            raise HTTPException(
+                403, "This is a read-only demo. Run Fantasy GM yourself to do this."
+            )
 
     def espn_http_error(e: EspnError) -> HTTPException:
         if isinstance(e, EspnAuthError):
@@ -191,17 +222,21 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"ok": True, "espn_auth_configured": bool(settings.espn_s2 and settings.espn_swid)}
+        return {
+            "ok": True,
+            "demo_mode": settings.demo_mode,
+            "espn_auth_configured": bool(settings.espn_s2 and settings.espn_swid),
+        }
 
     @app.get("/api/leagues")
     def list_leagues(s: Session = Depends(db)) -> list[dict]:
         out = []
-        for lg in s.scalars(select(League).order_by(League.season.desc(), League.name)):
+        for lg in s.scalars(visible_leagues().order_by(League.season.desc(), League.name)):
             my = s.get(Team, lg.my_team_id) if lg.my_team_id else None
             out.append(league_json(lg) | {"my_team": team_json(my) if my else None})
         return out
 
-    @app.post("/api/leagues", status_code=201)
+    @app.post("/api/leagues", status_code=201, dependencies=[Depends(not_demo)])
     def add_league(body: AddLeague, s: Session = Depends(db)) -> dict:
         existing = s.scalar(
             select(League).where(
@@ -218,14 +253,14 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
             raise espn_http_error(e) from e
         return {"id": new_id}
 
-    @app.delete("/api/leagues/{league_id}", status_code=204)
+    @app.delete("/api/leagues/{league_id}", status_code=204, dependencies=[Depends(not_demo)])
     def delete_league(league_id: int, s: Session = Depends(db)) -> None:
         league = s.get(League, league_id)
         if league is None:
             raise HTTPException(404, "League not found")
         s.delete(league)
 
-    @app.post("/api/leagues/{league_id}/sync")
+    @app.post("/api/leagues/{league_id}/sync", dependencies=[Depends(not_demo)])
     def sync(league_id: int) -> dict:
         lock = _lock_for(league_id)
         if not lock.acquire(blocking=False):
@@ -308,11 +343,13 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
         return [matchup_json(m) for m in data.matchups if week is None or m.week == week]
 
     @app.get("/api/leagues/{league_id}/transactions")
-    def transactions(league_id: int, limit: int = 100, s: Session = Depends(db)) -> list[dict]:
+    def transactions(
+        limit: int = 100, league: League = Depends(visible_league), s: Session = Depends(db)
+    ) -> list[dict]:
         txns = list(
             s.scalars(
                 select(Transaction)
-                .where(Transaction.league_id == league_id)
+                .where(Transaction.league_id == league.id)
                 .order_by(Transaction.proposed_at.desc().nullslast())
                 .limit(min(limit, 500))
             )
@@ -427,7 +464,8 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
         key = settings.anthropic_api_key
         return anthropic.Anthropic(api_key=key.get_secret_value()) if key else anthropic.Anthropic()
 
-    @app.post("/api/leagues/{league_id}/chat")
+    # The Claude assistant spends an API key; the demo gets a keyless version separately.
+    @app.post("/api/leagues/{league_id}/chat", dependencies=[Depends(not_demo)])
     def chat_turn(league_id: int, body: ChatRequest) -> StreamingResponse:
         conversation_id = body.conversation_id or str(uuid.uuid4())
         try:
@@ -454,7 +492,7 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
         )
 
     @app.get("/api/leagues/{league_id}/chat/{conversation_id}")
-    def chat_history(league_id: int, conversation_id: str) -> list[dict]:
+    def chat_history(conversation_id: str, _: League = Depends(visible_league)) -> list[dict]:
         return chat.transcript(conversation_id)
 
     @app.get("/api/leagues/{league_id}/free-agents")

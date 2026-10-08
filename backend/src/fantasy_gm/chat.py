@@ -681,7 +681,8 @@ def run_chat(
         except anthropic.AuthenticationError:
             yield {
                 "type": "error",
-                "message": "Anthropic API key missing or invalid. Set ANTHROPIC_API_KEY in backend/.env.",
+                "message": "Anthropic API key missing or invalid. Check the key you added, or "
+                "ANTHROPIC_API_KEY in backend/.env.",
             }
             return
         except anthropic.RateLimitError:

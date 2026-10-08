@@ -30,7 +30,7 @@ PLATFORM = "demo"
 EXTERNAL_ID = "demo"
 LEAGUE_NAME = "Gridiron Think Tank (demo)"
 SEED = 2026
-MY_TEAM = "8"  # 1-3 despite a top-four roster: plenty for the dashboard to work on
+MY_TEAM = "1"  # 1-3 despite a top-three roster: plenty for the dashboard to work on
 
 SLOT_COUNTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "D/ST": 1, "K": 1, "BE": 6, "IR": 1}
 REGULAR_SEASON_WEEKS = 14
@@ -39,14 +39,14 @@ SEASON_GAMES = 17
 
 # (team name, abbrev, manager). All fictional.
 TEAMS = [
-    ("Fourth & Long Shots", "4LS", "Dana Whitfield"),
+    ("Fourth & Long Shots", "4LS", "You (demo)"),
     ("Taco Tuesday Tacklers", "TTT", "Marcus Bell"),
     ("The Waiver Wire Wizards", "WWW", "Priya Raman"),
     ("Bye Week Blues", "BWB", "Chris Albright"),
     ("Hail Mary Hopefuls", "HMH", "Jordan Okafor"),
     ("Red Zone Regulars", "RZR", "Sam Castillo"),
     ("Pocket Presence", "PKT", "Elena Novak"),
-    ("Two-Minute Drill", "TMD", "You (demo)"),
+    ("Two-Minute Drill", "TMD", "Dana Whitfield"),
     ("Sunday Scaries", "SSC", "Taylor Nguyen"),
     ("Pick Six Society", "P6S", "Riley Brennan"),
 ]

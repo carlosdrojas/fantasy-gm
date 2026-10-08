@@ -4,11 +4,16 @@ import { API_URL } from "@/lib/api";
 export async function POST(request: Request, ctx: RouteContext<"/api/leagues/[id]/chat">) {
   const { id } = await ctx.params;
   if (!/^\d+$/.test(id)) return Response.json({ detail: "Bad league id" }, { status: 400 });
+  const userKey = request.headers.get("x-anthropic-key")?.trim();
   let upstream: Response;
   try {
     upstream = await fetch(`${API_URL}/api/leagues/${id}/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // A visitor's own Anthropic key, kept in their browser and passed straight through.
+        ...(userKey ? { "X-Anthropic-Key": userKey } : {}),
+      },
       body: await request.text(),
       signal: request.signal,
     });

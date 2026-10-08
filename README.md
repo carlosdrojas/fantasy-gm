@@ -52,16 +52,17 @@ cd frontend && FGM_API_URL=http://127.0.0.1:8765 pnpm dev
 ## Demo mode
 
 `FGM_DEMO_MODE=true` turns the backend into a public, read-only demo. It serves only a
-made-up 10-team league, "Gridiron Think Tank". Adding, deleting and syncing leagues returns
-403, the Claude assistant is off, background sync doesn't run, and no ESPN cookies or API
-keys are needed.
+made-up 10-team league, "Gridiron Think Tank", which is rebuilt on every start. Adding,
+deleting and syncing leagues returns 403, background sync doesn't run, and no ESPN cookies
+or API keys are needed. The Assistant's question menu works as usual. Claude chat runs only
+on an Anthropic key the visitor adds; the server's key is never used.
 
 The demo league uses **real NFL players and their real weekly fantasy points** (PPR, from
 ESPN) from `backend/src/fantasy_gm/demo/pool.json`. **The teams, managers, draft, waiver
 claims and schedule are made up.** A seeded simulation drafts the teams, sets lineups,
 makes claims and scores each week from the starters' real points, so the league comes out
-the same on every build. The demo user manages "Two-Minute Drill": 1–3 despite a top-four
-roster.
+the same on every build. The demo user manages "Fourth & Long Shots": 1–3 despite the
+third-strongest roster.
 
 ```bash
 FGM_DATABASE_URL=sqlite:///$PWD/backend/data/demo.db FGM_DEMO_MODE=true API_PORT=8766 WEB_PORT=3001 ./dev.sh
@@ -69,6 +70,23 @@ FGM_DATABASE_URL=sqlite:///$PWD/backend/data/demo.db FGM_DEMO_MODE=true API_PORT
 
 To refresh the player pool for a newer week (needs ESPN cookies and a league you can read):
 `cd backend && .venv/bin/python scripts/export_demo_pool.py <espn_league_id> --week 6`.
+
+## Deploying the demo
+
+The backend runs as one always-on container (`backend/Dockerfile`, demo mode by default).
+It needs no disk, because the demo league is rebuilt on every start. The Next.js frontend
+calls it from the server, so visitors never talk to the backend directly.
+
+1. **Backend on Fly.io** (Railway and Render also run the same Dockerfile):
+   ```bash
+   cd backend
+   fly launch --no-deploy --internal-port 8000   # pick an app name, decline the databases
+   fly deploy
+   curl https://<app>.fly.dev/api/health       # {"ok":true,"demo_mode":true,...}
+   ```
+2. **Frontend on Vercel**: import the GitHub repo, set the root directory to `frontend`,
+   and add the environment variable `FGM_API_URL=https://<app>.fly.dev`. Optionally set
+   `FGM_REPO_URL` (where the banner and header link; defaults to this repo).
 
 ## How the numbers work
 
@@ -95,9 +113,13 @@ To refresh the player pool for a newer week (needs ESPN cookies and a league you
   variance. The live week uses ESPN's projections. Playoffs are a single-elimination bracket
   with byes for top seeds. The trade analyzer re-runs the simulation with both post-trade
   rosters.
-- **Assistant**: Claude Opus 5 with read-only tools over the same analytics (rosters,
-  waivers, trade search and evaluation, odds, transactions). Conversations are saved
-  in the database.
+- **Assistant**: two modes. A menu of 8 questions (lineup, waivers, trades, weak spots,
+  odds, luck, matchup, the team to beat) is answered instantly from the analytics with
+  fixed templates: no model, no key, the same answer every time. Free-form chat is
+  Claude Opus 5 with read-only tools over the same analytics (rosters, waivers, trade
+  search and evaluation, odds, transactions). It uses the server's key, or a key you
+  add in the browser; that key is stored in the browser only and sent with each message.
+  Conversations are saved in the database.
 - **Waivers**: every free agent is tested in your lineup. Weekly gain is how much your
   season-long lineup improves; This wk uses this week's projections. Each suggestion names
   your lowest-value bench player as the drop.

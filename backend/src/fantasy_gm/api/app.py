@@ -11,14 +11,14 @@ from datetime import date
 
 import anthropic
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from fantasy_gm import chat, demo
+from fantasy_gm import chat, demo, quick_answers
 from fantasy_gm.analytics.league import (
     LeagueData,
     lineup_status,
@@ -73,6 +73,10 @@ class TradeQuery(BaseModel):
     give: list[int] = Field(min_length=1, max_length=5)
     get: list[int] = Field(min_length=1, max_length=5)
     team_id: int | None = None
+
+
+class QuickQuestion(BaseModel):
+    question: str = Field(max_length=32)
 
 
 class ChatRequest(BaseModel):
@@ -225,6 +229,8 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
         return {
             "ok": True,
             "demo_mode": settings.demo_mode,
+            # Claude chat in demo mode runs only on a key the visitor brings.
+            "assistant_needs_user_key": settings.demo_mode,
             "espn_auth_configured": bool(settings.espn_s2 and settings.espn_swid),
         }
 
@@ -460,20 +466,55 @@ def create_app(settings: Settings | None = None, *, start_scheduler: bool = True
         }
         return result
 
-    def anthropic_client() -> anthropic.Anthropic:
-        key = settings.anthropic_api_key
-        return anthropic.Anthropic(api_key=key.get_secret_value()) if key else anthropic.Anthropic()
+    @app.get("/api/assistant/questions")
+    def quick_questions() -> list[dict]:
+        return [{"id": q.id, "label": q.label} for q in quick_answers.QUESTIONS]
 
-    # The Claude assistant spends an API key; the demo gets a keyless version separately.
-    @app.post("/api/leagues/{league_id}/chat", dependencies=[Depends(not_demo)])
-    def chat_turn(league_id: int, body: ChatRequest) -> StreamingResponse:
-        conversation_id = body.conversation_id or str(uuid.uuid4())
+    @app.post("/api/leagues/{league_id}/assistant/quick")
+    def quick_answer(body: QuickQuestion, data: LeagueData = Depends(league_data)) -> dict:
+        q = quick_answers.QUESTIONS_BY_ID.get(body.question)
+        if q is None:
+            raise HTTPException(404, "Unknown question")
         try:
-            client = anthropic_client()
+            text = quick_answers.answer(
+                data,
+                q.id,
+                odds=lambda: memoized(("odds", *_sync_key(data)), lambda: simulate(data)),
+            )
+        except quick_answers.NoTeamError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"question": q.id, "label": q.label, "answer": text, "source": "rules"}
+
+    def anthropic_client(user_key: str | None) -> anthropic.Anthropic:
+        """The visitor's own key if they sent one. Otherwise the server's, except in demo
+        mode, where strangers must never spend it."""
+        if user_key:
+            return anthropic.Anthropic(api_key=user_key)
+        if settings.demo_mode:
+            raise HTTPException(
+                401, "This demo's Claude chat needs your own Anthropic API key (add it above)."
+            )
+        key = settings.anthropic_api_key
+        try:
+            return (
+                anthropic.Anthropic(api_key=key.get_secret_value())
+                if key
+                else anthropic.Anthropic()
+            )
         except anthropic.AnthropicError as e:
             raise HTTPException(
                 400, "No Anthropic API key. Set ANTHROPIC_API_KEY in backend/.env and restart."
             ) from e
+
+    @app.post("/api/leagues/{league_id}/chat")
+    def chat_turn(
+        body: ChatRequest,
+        league: League = Depends(visible_league),
+        x_anthropic_key: str | None = Header(None, max_length=256),
+    ) -> StreamingResponse:
+        league_id = league.id
+        conversation_id = body.conversation_id or str(uuid.uuid4())
+        client = anthropic_client(x_anthropic_key.strip() if x_anthropic_key else None)
 
         def events():
             yield _sse({"type": "start", "conversation_id": conversation_id})

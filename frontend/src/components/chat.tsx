@@ -1,20 +1,53 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { chatHistoryAction } from "@/app/actions";
+import { chatHistoryAction, quickAnswerAction } from "@/app/actions";
+import type { QuickQuestion } from "@/lib/api";
 
-type Msg = { role: "user" | "assistant"; text: string; tools?: string[]; error?: string };
-
-const SUGGESTIONS = [
-  "Who should I start this week?",
-  "Find me a trade that fixes my weakest position.",
-  "Which waiver pickups are worth it, and who do I drop?",
-  "How likely am I to make the playoffs, and what would change that?",
-];
+type Msg = {
+  role: "user" | "assistant";
+  text: string;
+  tools?: string[];
+  error?: string;
+  source?: "rules" | "claude";
+};
 
 const storageKey = (leagueId: number) => `fgm-chat-${leagueId}`;
+const KEY_STORAGE = "fgm-anthropic-key";
+
+function readKey(): string {
+  try {
+    return localStorage.getItem(KEY_STORAGE) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+const KEY_EVENT = "fgm-key-change";
+
+function writeKey(key: string) {
+  try {
+    if (key) localStorage.setItem(KEY_STORAGE, key);
+    else localStorage.removeItem(KEY_STORAGE);
+  } catch {}
+  window.dispatchEvent(new Event(KEY_EVENT));
+}
+
+function subscribeKey(onChange: () => void) {
+  window.addEventListener(KEY_EVENT, onChange);
+  window.addEventListener("storage", onChange); // other tabs
+  return () => {
+    window.removeEventListener(KEY_EVENT, onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+/** The visitor's Anthropic key from localStorage; "" on the server and until hydrated. */
+function useApiKey(): string {
+  return useSyncExternalStore(subscribeKey, readKey, () => "");
+}
 
 function readConversation(leagueId: number): string | null {
   try {
@@ -31,8 +64,20 @@ function writeConversation(leagueId: number, id: string | null) {
   } catch {}
 }
 
-export function Chat({ leagueId }: { leagueId: number }) {
+export function Chat({
+  leagueId,
+  questions,
+  needsUserKey,
+}: {
+  leagueId: number;
+  questions: QuickQuestion[];
+  /** Demo mode: Claude only runs on a key the visitor adds (kept in their browser). */
+  needsUserKey: boolean;
+}) {
   const [messages, setMessages] = useState<Msg[]>([]);
+  const apiKey = useApiKey();
+  const [keyDraft, setKeyDraft] = useState("");
+  const [showKeyForm, setShowKeyForm] = useState(false);
   // Only read on the client; the id isn't rendered, so server/client markup still match.
   const [conversationId, setConversationId] = useState<string | null>(() =>
     typeof window === "undefined" ? null : readConversation(leagueId),
@@ -44,8 +89,33 @@ export function Chat({ leagueId }: { leagueId: number }) {
 
   useEffect(() => {
     const id = readConversation(leagueId);
-    if (id) chatHistoryAction(leagueId, id).then((h) => setMessages(h));
+    if (id)
+      chatHistoryAction(leagueId, id).then((h) =>
+        setMessages(h.map((m) => (m.role === "assistant" ? { ...m, source: "claude" } : m))),
+      );
   }, [leagueId]);
+
+  const canChat = !needsUserKey || Boolean(apiKey);
+
+  function saveKey() {
+    const key = keyDraft.trim();
+    writeKey(key);
+    setKeyDraft("");
+    setShowKeyForm(false);
+  }
+
+  function forgetKey() {
+    writeKey("");
+  }
+
+  async function ask(q: QuickQuestion) {
+    if (busy) return;
+    setBusy(true);
+    setMessages((ms) => [...ms, { role: "user", text: q.label }, { role: "assistant", text: "", source: "rules" }]);
+    const res = await quickAnswerAction(leagueId, q.id);
+    updateLast((m) => ({ ...m, text: res.answer ?? "", error: res.error }));
+    setBusy(false);
+  }
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
@@ -61,11 +131,18 @@ export function Chat({ leagueId }: { leagueId: number }) {
     setInput("");
     setBusy(true);
     setStatus("Thinking…");
-    setMessages((ms) => [...ms, { role: "user", text: message }, { role: "assistant", text: "", tools: [] }]);
+    setMessages((ms) => [
+      ...ms,
+      { role: "user", text: message },
+      { role: "assistant", text: "", tools: [], source: "claude" },
+    ]);
     try {
       const res = await fetch(`/api/leagues/${leagueId}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "X-Anthropic-Key": apiKey } : {}),
+        },
         body: JSON.stringify({ message, conversation_id: conversationId }),
       });
       if (!res.ok || !res.body) {
@@ -117,8 +194,8 @@ export function Chat({ leagueId }: { leagueId: number }) {
     <div className="flex max-w-3xl flex-col gap-4">
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted">
-          Claude reads your league&apos;s synced data (rosters, waivers, trades, odds) to answer. It can&apos;t make moves on
-          ESPN.
+          Pick a question for an instant answer from the league analytics
+          {canChat ? ", or ask Claude anything below" : ""}. Nothing here can make moves on ESPN.
         </p>
         {messages.length > 0 && (
           <button onClick={newChat} disabled={busy} className="text-xs text-link hover:underline disabled:opacity-50">
@@ -127,19 +204,20 @@ export function Chat({ leagueId }: { leagueId: number }) {
         )}
       </div>
 
-      {messages.length === 0 && (
+      {messages.length === 0 ? (
         <div className="grid gap-2 sm:grid-cols-2">
-          {SUGGESTIONS.map((s) => (
+          {questions.map((q) => (
             <button
-              key={s}
-              onClick={() => send(s)}
-              className="rounded-lg border border-line bg-surface p-3 text-left text-sm text-ink-2 hover:bg-surface-2 hover:text-ink"
+              key={q.id}
+              onClick={() => ask(q)}
+              disabled={busy}
+              className="rounded-lg border border-line bg-surface p-3 text-left text-sm text-ink-2 hover:bg-surface-2 hover:text-ink disabled:opacity-60"
             >
-              {s}
+              {q.label}
             </button>
           ))}
         </div>
-      )}
+      ) : null}
 
       <div className="space-y-4">
         {messages.map((m, i) =>
@@ -149,6 +227,10 @@ export function Chat({ leagueId }: { leagueId: number }) {
             </div>
           ) : (
             <div key={i} className="rounded-xl border border-line bg-surface px-4 py-3 text-sm">
+              <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted">
+                {m.source === "rules" ? "Rule-based answer" : "Claude"}
+              </p>
+              {m.source === "rules" && !m.text && !m.error && <p className="text-xs text-muted">Crunching…</p>}
               {m.tools && m.tools.length > 0 && (
                 <div className="mb-2 flex flex-wrap gap-1">
                   {[...new Set(m.tools)].map((t) => (
@@ -171,33 +253,100 @@ export function Chat({ leagueId }: { leagueId: number }) {
         <div ref={bottom} />
       </div>
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          send(input);
-        }}
-        className="sticky bottom-4 flex gap-2 rounded-xl border border-line bg-surface p-2 shadow-lg focus-within:border-accent"
-      >
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send(input);
-            }
+      {messages.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {questions.map((q) => (
+            <button
+              key={q.id}
+              onClick={() => ask(q)}
+              disabled={busy}
+              className="rounded-full border border-line px-2.5 py-1 text-xs text-ink-2 hover:bg-surface-2 hover:text-ink disabled:opacity-60"
+            >
+              {q.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {(!canChat || showKeyForm) && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            saveKey();
           }}
-          rows={1}
-          placeholder="Ask about your league…"
-          className="flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-ink outline-none placeholder:text-muted"
-        />
-        <button
-          disabled={busy || !input.trim()}
-          className="rounded-lg bg-accent px-3 text-sm font-semibold text-accent-ink disabled:bg-surface-2 disabled:text-muted"
+          className="space-y-2 rounded-xl border border-line bg-surface p-4"
         >
-          Send
-        </button>
-      </form>
+          <p className="text-sm text-ink">Ask Claude anything about this league</p>
+          <p className="text-xs text-ink-2">
+            Claude can call the same analytics as the questions above (rosters, waivers, trade search, playoff odds) and
+            reason across them. Add your own Anthropic API key to use it. The key stays in this browser and is sent only
+            with your messages; it is never stored on the server.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              placeholder="sk-ant-…"
+              autoComplete="off"
+              className="flex-1 rounded-md border border-line bg-page px-2.5 py-1.5 text-sm text-ink"
+            />
+            <button
+              disabled={!keyDraft.trim()}
+              className="rounded-md bg-accent px-3 text-sm font-semibold text-accent-ink disabled:bg-surface-2 disabled:text-muted"
+            >
+              Save key
+            </button>
+          </div>
+        </form>
+      )}
+
+      {canChat && apiKey && (
+        <p className="text-xs text-muted">
+          Using your Anthropic API key.{" "}
+          <button onClick={forgetKey} className="text-link hover:underline">
+            Remove it
+          </button>
+        </p>
+      )}
+      {canChat && !apiKey && !showKeyForm && (
+        <p className="text-xs text-muted">
+          Using the server&apos;s Anthropic key.{" "}
+          <button onClick={() => setShowKeyForm(true)} className="text-link hover:underline">
+            Use your own
+          </button>
+        </p>
+      )}
+
+      {canChat && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            send(input);
+          }}
+          className="sticky bottom-4 flex gap-2 rounded-xl border border-line bg-surface p-2 shadow-lg focus-within:border-accent"
+        >
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send(input);
+              }
+            }}
+            rows={1}
+            placeholder="Ask about your league…"
+            className="flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-ink outline-none placeholder:text-muted"
+          />
+          <button
+            disabled={busy || !input.trim()}
+            className="rounded-lg bg-accent px-3 text-sm font-semibold text-accent-ink disabled:bg-surface-2 disabled:text-muted"
+          >
+            Send
+          </button>
+        </form>
+      )}
     </div>
   );
 }

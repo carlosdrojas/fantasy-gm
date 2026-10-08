@@ -63,3 +63,14 @@ export async function teamRosterAction(leagueId: number, teamId: number) {
     return [];
   }
 }
+
+export async function quickAnswerAction(
+  leagueId: number,
+  question: string,
+): Promise<{ answer?: string; error?: string }> {
+  try {
+    return { answer: (await api.quickAnswer(leagueId, question)).answer };
+  } catch (e) {
+    return { error: e instanceof ApiError ? e.message : "Couldn't answer that." };
+  }
+}

@@ -1,7 +1,7 @@
 import { LiveBadge, LiveRefresher } from "@/components/live";
 import { LeagueTabs, SyncButton } from "@/components/league-nav";
 import { ErrorPanel } from "@/components/ui";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, getHealth } from "@/lib/api";
 
 function ago(iso: string | null) {
   if (!iso) return "never";
@@ -14,9 +14,9 @@ function ago(iso: string | null) {
 
 export default async function LeagueLayout({ children, params }: LayoutProps<"/leagues/[id]">) {
   const id = Number((await params).id);
-  let league;
+  let league, health;
   try {
-    league = await api.league(id);
+    [league, health] = await Promise.all([api.league(id), getHealth()]);
   } catch (e) {
     return <ErrorPanel message={e instanceof ApiError ? e.message : String(e)} />;
   }
@@ -36,8 +36,8 @@ export default async function LeagueLayout({ children, params }: LayoutProps<"/l
             <p className="mt-0.5 text-xs text-muted">
               {league.season} season, week {league.current_week ?? "–"}
               {league.final_regular_week ? ` of ${league.final_regular_week}` : ""},{" "}
-              {league.settings.reception_points ? `${league.settings.reception_points} PPR` : "standard scoring"}.
-              Synced {ago(league.last_synced_at)}.
+              {league.settings.reception_points ? `${league.settings.reception_points} PPR` : "standard scoring"}.{" "}
+              {health.demo_mode ? "Sample data, frozen at this week." : `Synced ${ago(league.last_synced_at)}.`}
             </p>
             {failed && (
               <p className="mt-2 text-xs text-critical">
@@ -45,7 +45,7 @@ export default async function LeagueLayout({ children, params }: LayoutProps<"/l
               </p>
             )}
           </div>
-          <SyncButton leagueId={id} />
+          {!health.demo_mode && <SyncButton leagueId={id} />}
         </div>
         <LeagueTabs leagueId={id} myTeamId={league.my_team_id} />
       </div>

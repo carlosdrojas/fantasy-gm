@@ -75,7 +75,8 @@ def test_demo_mode_refuses_writes(demo_api):
     )
     assert demo_api.delete(f"/api/leagues/{lid}").status_code == 403
     assert demo_api.post(f"/api/leagues/{lid}/sync").status_code == 403
-    assert demo_api.post(f"/api/leagues/{lid}/chat", json={"message": "hi"}).status_code == 403
+    # Claude chat never runs on the server's key in the demo.
+    assert demo_api.post(f"/api/leagues/{lid}/chat", json={"message": "hi"}).status_code == 401
     assert len(demo_api.get("/api/leagues").json()) == 1
 
 
@@ -110,7 +111,10 @@ def test_demo_league_read_endpoints(demo_api):
         },
     )
     assert r.status_code == 200, r.text
-    assert demo_api.get(f"/api/leagues/{lid}/waivers").json()["suggestions"]
+    suggestions = demo_api.get(f"/api/leagues/{lid}/waivers").json()["suggestions"]
+    assert suggestions
+    # The pool has free agents on injured reserve; they must not be suggested.
+    assert all(s["player"]["injury_status"] != "INJURY_RESERVE" for s in suggestions)
 
 
 def test_demo_league_rebuild_keeps_its_id(settings):
@@ -118,3 +122,44 @@ def test_demo_league_rebuild_keeps_its_id(settings):
 
     init_db(settings.database_url)
     assert ensure_demo_league() == ensure_demo_league()
+
+
+def test_demo_chat_uses_the_visitors_key(demo_api, monkeypatch):
+    from fantasy_gm import chat
+
+    seen = {}
+
+    def fake_run_chat(client, league_id, conversation_id, text):
+        seen["key"] = client.api_key
+        yield {"type": "text", "text": "ok"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(chat, "run_chat", fake_run_chat)
+    lid = demo_api.get("/api/leagues").json()[0]["id"]
+    r = demo_api.post(
+        f"/api/leagues/{lid}/chat", json={"message": "hi"}, headers={"X-Anthropic-Key": "sk-test"}
+    )
+    assert r.status_code == 200 and '"text": "ok"' in r.text
+    assert seen["key"] == "sk-test"
+
+
+def test_quick_answers(demo_api):
+    lid = demo_api.get("/api/leagues").json()[0]["id"]
+    questions = demo_api.get("/api/assistant/questions").json()
+    assert len(questions) == 8
+    for q in questions:
+        r = demo_api.post(f"/api/leagues/{lid}/assistant/quick", json={"question": q["id"]})
+        assert r.status_code == 200, (q, r.text)
+        body = r.json()
+        assert body["source"] == "rules" and body["answer"].startswith("**"), body
+    bad = demo_api.post(f"/api/leagues/{lid}/assistant/quick", json={"question": "nope"})
+    assert bad.status_code == 404
+
+
+def test_quick_answers_are_deterministic(demo_api):
+    lid = demo_api.get("/api/leagues").json()[0]["id"]
+    ask = lambda q: demo_api.post(  # noqa: E731
+        f"/api/leagues/{lid}/assistant/quick", json={"question": q}
+    ).json()["answer"]
+    for q in ("lineup", "waivers", "trades", "needs", "luck", "matchup"):
+        assert ask(q) == ask(q)

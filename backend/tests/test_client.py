@@ -47,3 +47,10 @@ def test_gives_up_after_repeated_5xx(client, fake):
 def test_filter_header(client, fake):
     client.free_agents(LEAGUE_ID, SEASON, scoring_period=4, limit=10)
     assert '"limit": 10' in fake.calls[-1].headers["X-Fantasy-Filter"]
+
+
+def test_history_filter_covers_every_week_so_far():
+    from fantasy_gm.espn.adapter import _history_filter
+
+    f = _history_filter([1], 2026, 6)["players"]["filterStatsForTopScoringPeriodIds"]
+    assert f["value"] >= 6  # ESPN returns only this many recent games

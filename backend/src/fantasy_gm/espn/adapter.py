@@ -22,7 +22,13 @@ def _history_filter(player_ids: list[int], season: int, through_week: int) -> di
     return {
         "players": {
             "filterIds": {"value": player_ids},
-            "filterStatsForTopScoringPeriodIds": {"value": 2, "additionalValue": stat_ids},
+            # "value" is how many of the player's most recent games to include. ESPN
+            # doesn't reliably honor the per-week ids above, so ask for every week so far
+            # (plus slack; earlier seasons' games are dropped when parsing).
+            "filterStatsForTopScoringPeriodIds": {
+                "value": through_week + 2,
+                "additionalValue": stat_ids,
+            },
         }
     }
 

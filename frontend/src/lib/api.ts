@@ -1,5 +1,6 @@
 // Typed client for the FastAPI backend. Server-side only (used by Server Components/Actions).
 import "server-only";
+import { cache } from "react";
 
 export const API_URL = process.env.FGM_API_URL ?? "http://127.0.0.1:8000";
 
@@ -261,8 +262,28 @@ export type TradeAnalysis = Trade & {
 
 export type TradeSort = "balanced" | "gain" | "likely";
 
+export type Health = {
+  ok: boolean;
+  demo_mode: boolean;
+  assistant_needs_user_key: boolean;
+  espn_auth_configured: boolean;
+};
+
+export type QuickQuestion = { id: string; label: string };
+export type QuickAnswer = { question: string; label: string; answer: string; source: "rules" };
+
+/** Backend health, once per request (the root layout and pages both need demo_mode). */
+export const getHealth = cache(() => request<Health>("/api/health"));
+
 export const api = {
-  health: () => request<{ ok: boolean; espn_auth_configured: boolean }>("/api/health"),
+  health: () => getHealth(),
+  quickQuestions: () => request<QuickQuestion[]>("/api/assistant/questions"),
+  quickAnswer: (id: number, question: string) =>
+    request<QuickAnswer>(`/api/leagues/${id}/assistant/quick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    }),
   leagues: () => request<(League & { my_team: Team | null })[]>("/api/leagues"),
   league: (id: number) => request<LeagueOverview>(`/api/leagues/${id}`),
   power: (id: number) => request<PowerRow[]>(`/api/leagues/${id}/power`),

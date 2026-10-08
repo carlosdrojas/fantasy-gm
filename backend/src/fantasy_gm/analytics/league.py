@@ -315,7 +315,13 @@ def waiver_suggestions(data: LeagueData, team_id: int, limit: int = 25) -> list[
     base_week, _ = total(roster, True)
 
     candidates = sorted(data.free_agents, key=lambda r: r.value.per_game, reverse=True)
-    candidates = [c for c in candidates if c.player.position in POSITIONS][:MAX_FA_CANDIDATES]
+    # Players on injured reserve can't help a lineup for weeks; their blended value
+    # (often recent production only) would otherwise rank them first.
+    candidates = [
+        c
+        for c in candidates
+        if c.player.position in POSITIONS and c.player.injury_status != "INJURY_RESERVE"
+    ][:MAX_FA_CANDIDATES]
 
     suggestions = []
     for fa in candidates:
